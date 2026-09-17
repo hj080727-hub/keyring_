@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>키링공방 ♡</title>
+  <meta name="description" content="나만의 자캐 3D 키링을 만들어보세요.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="sparkle-layer" aria-hidden="true"></div>
+  <header class="hero">
+    <div class="title-wrap">
+      <div class="eyebrow">MY CHARACTER GOODS STUDIO</div>
+      <h1>키링공방</h1>
+      <p>사진을 넣으면 나만의 키링이 만들어져요 ♡</p>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel upload-panel">
+      <h2>01 · 사진 넣기</h2>
+      <label class="dropzone" id="dropzone">
+        <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp">
+        <span class="drop-icon">✦</span>
+        <strong>사진 선택하기</strong>
+        <small>배경이 있는 사진은 누끼 미리보기를 만들어요</small>
+      </label>
+      <div class="preview-row">
+        <div class="image-box"><img id="originalPreview" alt="원본 미리보기"></div>
+        <div class="image-box checker"><img id="cutoutPreview" alt="누끼 미리보기"></div>
+      </div>
+      <div class="status" id="status">아직 사진을 선택하지 않았어요.</div>
+      <div class="button-row">
+        <button class="secondary" id="cutoutBtn">✂ 누끼 다시 만들기</button>
+        <button class="secondary" id="lineBtn">✎ 선화 추출</button>
+      </div>
+      <p class="privacy-note">🔒 기본 누끼·선화는 브라우저에서 처리해요. AI 기능을 켜면 선택한 이미지가 설정한 AI 서버로 전송돼요.</p>
+      <div class="ai-card">
+        <div><b>AI 공방 도우미</b><span>선택 기능</span></div>
+        <p>서버리스 백엔드를 연결하면 AI 누끼·선화 처리를 사용할 수 있어요.</p>
+        <small>API 키는 브라우저에 넣지 않습니다 🔐</small>
+      </div>
+    </section>
+
+    <section class="panel maker-panel">
+      <h2>02 · 키링 꾸미기</h2>
+      <div class="stage-wrap">
+        <div id="stage" class="stage">
+          <canvas id="threeCanvas" aria-label="3D 키링 미리보기"></canvas>
+          <div id="lightSweep"></div>
+          <div id="ring3d" class="ring3d"><span></span></div>
+          <div id="keyring" class="keyring material-clear" aria-hidden="true">
+            <div id="hole" class="hole"></div><img id="keyringImage" alt="">
+          </div>
+          <div class="floor-shadow"></div>
+        </div>
+        <div class="stage-tip">마우스로 끌어서 돌려보세요 · 구멍은 아크릴 영역 안에서만 움직여요</div>
+      </div>
+
+      <div class="controls">
+        <div class="control-group">
+          <label>키링 재질</label>
+          <div class="choices" id="materialChoices">
+            <button data-material="aurora" class="choice active">🌌 오로라</button>
+            <button data-material="pearl" class="choice">✨ 펄</button>
+            <button data-material="clear" class="choice">🫧 투명</button>
+            <button data-material="line" class="choice">✎ 선화</button>
+            <button data-material="opaque" class="choice">🎨 불투명</button>
+          </div>
+        </div>
+
+        <div class="control-group" id="opaqueGroup" hidden>
+          <label for="opaqueColor">불투명 색상</label>
+          <input id="opaqueColor" type="color" value="#dcb9f5">
+        </div>
+
+        <div class="control-group">
+          <label>아크릴 외곽 여백 <output id="paddingValue">24</output>px</label>
+          <input id="padding" type="range" min="4" max="90" value="24">
+        </div>
+
+        <div class="control-group">
+          <label>구멍 위치 <output id="holeValue">상단 중앙</output></label>
+          <div class="hole-presets">
+            <button class="choice active" data-hole="top">상단 중앙</button>
+            <button class="choice" data-hole="top-left">왼쪽 위</button>
+            <button class="choice" data-hole="top-right">오른쪽 위</button>
+            <button class="choice" data-hole="custom">직접 드래그</button>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label>열쇠고리 모양</label>
+          <div class="choices" id="ringChoices">
+            <button class="choice active" data-ring="circle">○ 원형</button>
+            <button class="choice" data-ring="heart">♡ 하트</button>
+            <button class="choice" data-ring="star">★ 별</button>
+            <button class="choice" data-ring="moon">☾ 달</button>
+            <button class="choice" data-ring="flower">✿ 꽃</button>
+            <button class="choice" data-ring="chain">🔗 체인</button>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label>금속 색상</label>
+          <div class="choices" id="metalChoices">
+            <button class="choice active" data-metal="silver">실버</button>
+            <button class="choice" data-metal="gold">골드</button>
+            <button class="choice" data-metal="rose">로즈골드</button>
+            <button class="choice" data-metal="black">블랙</button>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label>회전 속도 <output id="speedValue">천천히</output></label>
+          <input id="speed" type="range" min="6" max="16" value="11">
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="primary" id="savePng">PNG 저장 ✦</button>
+        <button class="primary" id="saveGif">GIF 저장 ♥︎</button>
+      </div>
+      <div class="save-status" id="saveStatus"></div>
+    </section>
+  </main>
+
+  <div id="aiModal" class="ai-modal" hidden>
+    <div class="ai-modal-backdrop"></div>
+    <section class="ai-modal-card" role="dialog" aria-modal="true" aria-labelledby="aiModalTitle">
+      <div class="ai-modal-sparkle">✦</div>
+      <h2 id="aiModalTitle">AI 결과를 확인해 주세요</h2>
+      <p id="aiModalText">원본 캐릭터가 최대한 유지되었는지 확인한 뒤 적용해 주세요.</p>
+      <div class="ai-modal-preview checker"><img id="aiModalPreview" alt="AI 처리 결과 미리보기"></div>
+      <div class="ai-modal-actions">
+        <button class="secondary" id="aiReject">원본 유지</button>
+        <button class="secondary" id="aiRetry">다시 처리</button>
+        <button class="primary" id="aiAccept">이 결과 사용하기 ♡</button>
+      </div>
+    </section>
+  </div>
+
+  <footer>키링공방 · 자캐를 귀여운 굿즈로 만들어보세요 ♡</footer>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.js"></script>
+<script src="script.js"></script>
+</body>
+</html>
