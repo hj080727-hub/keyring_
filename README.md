@@ -70,3 +70,12 @@ https://platform.openai.com/docs/models
 AI 이미지 편집 모델은 '정확한 누끼 마스크 생성기'와 동일하지 않습니다.
 원본 캐릭터를 완전히 보존해야 하는 굿즈 제작에서는 AI 결과를 바로 확정하지 말고,
 미리보기/재시도/수동 마스크 확인 단계를 두는 것을 권장합니다.
+
+
+### v6 changes
+- Acrylic silhouette follows transparent image alpha/character outline.
+- Opaque acrylic color is rendered as a separate acrylic layer, so the character image is not tinted.
+- Rounded six-petal flower hardware.
+- 3D preview is reduced to about 72% scale for better hardware visibility.
+- PNG export captures the actual Three.js 3D preview.
+- GIF export uses 24 frames at 360px for faster encoding.

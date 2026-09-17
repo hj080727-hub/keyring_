@@ -75,7 +75,7 @@ footer{position:relative;z-index:1;text-align:center;color:#a69a82;font-size:11p
 .ai-card p{margin:6px 0 3px;font-size:11px;line-height:1.5}
 .ai-card small{font-size:10px;color:#a39778}
 
-#threeCanvas{position:absolute;inset:0;width:100%;height:100%;display:block;z-index:2;touch-action:none}
+#threeCanvas{position:absolute;inset:0;width:100%;height:100%;display:block;z-index:2;touch-action:none;cursor:grab}
 .stage .keyring,.stage .ring3d,.stage .floor-shadow{display:none}
 .stage-tip{position:relative;z-index:8}
 

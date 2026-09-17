@@ -277,23 +277,16 @@ $$('button').forEach(b=>b.addEventListener('click',e=>showSpark(e.clientX,e.clie
 
 // ================= REAL 3D PREVIEW + GIF EXPORT =================
 let three = null;
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+let canvasMode = null, canvasStartX = 0, canvasStartRotation = 0;
 
 function hexNumber(hex){ return parseInt(hex.replace('#',''),16); }
 function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
-
-// Hole position is stored as normalized coordinates inside the acrylic.
-state.holeX = .5;
-state.holeY = .08;
-
-function setHolePreset3D(){
-  if(state.hole==='top'){ state.holeX=.5; state.holeY=.08; }
-  else if(state.hole==='top-left'){ state.holeX=.23; state.holeY=.08; }
-  else if(state.hole==='top-right'){ state.holeX=.77; state.holeY=.08; }
-  if(three) three.updateGeometry?.();
-}
+state.holeX=.5; state.holeY=.08;
 
 function makeMetalMaterial(color){
-  return new THREE.MeshStandardMaterial({color,metalness:.92,roughness:.18});
+  return new THREE.MeshStandardMaterial({color,metalness:.95,roughness:.16});
 }
 
 function roundedShape(w,h,r){
@@ -306,256 +299,295 @@ function roundedShape(w,h,r){
   return sh;
 }
 
+// Build a real acrylic outline from the uploaded transparent image's alpha channel.
+async function makeAlphaSilhouette(url){
+  if(!url) return null;
+  try{
+    const im=await loadImage(url);
+    const max=112, sc=Math.min(1,max/Math.max(im.naturalWidth,im.naturalHeight));
+    const w=Math.max(8,Math.round(im.naturalWidth*sc)), h=Math.max(8,Math.round(im.naturalHeight*sc));
+    const c=document.createElement('canvas'); c.width=w;c.height=h;
+    const ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(im,0,0,w,h);
+    const d=ctx.getImageData(0,0,w,h).data, mask=new Uint8Array(w*h);
+    let minX=w,maxX=0,minY=h,maxY=0,count=0;
+    for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+      const a=d[(y*w+x)*4+3];
+      if(a>28){mask[y*w+x]=1;count++;minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y)}
+    }
+    if(count<20) return null;
+    // Keep only the largest connected component so stray transparent-image specks don't become giant acrylic spikes.
+    const seen=new Uint8Array(w*h), comps=[];
+    for(let sy=minY;sy<=maxY;sy++) for(let sx=minX;sx<=maxX;sx++){
+      const si=sy*w+sx;if(!mask[si]||seen[si])continue;
+      const q=[si];seen[si]=1;const comp=[];
+      while(q.length){const i=q.pop(),x=i%w,y=(i/w)|0;comp.push(i);
+        const ns=[i-1,i+1,i-w,i+w];
+        for(const n of ns){if(n<0||n>=w*h||seen[n]||!mask[n])continue;const nx=n%w,ny=(n/w)|0;if(Math.abs(nx-x)+Math.abs(ny-y)!==1)continue;seen[n]=1;q.push(n)}
+      }
+      comps.push(comp);
+    }
+    comps.sort((a,b)=>b.length-a.length); const keep=new Uint8Array(w*h);
+    for(const i of comps[0]) keep[i]=1;
+    const edges=[];
+    const add=(ax,ay,bx,by)=>edges.push([[ax,ay],[bx,by]]);
+    for(let y=0;y<h;y++) for(let x=0;x<w;x++) if(keep[y*w+x]){
+      if(y===0||!keep[(y-1)*w+x]) add(x,y,x+1,y);
+      if(x===w-1||!keep[y*w+x+1]) add(x+1,y,x+1,y+1);
+      if(y===h-1||!keep[(y+1)*w+x]) add(x+1,y+1,x,y+1);
+      if(x===0||!keep[y*w+x-1]) add(x,y+1,x,y);
+    }
+    const key=(x,y)=>x+','+y, map=new Map();
+    edges.forEach((e,i)=>{const k=key(e[0][0],e[0][1]);if(!map.has(k))map.set(k,[]);map.get(k).push(i)});
+    const used=new Uint8Array(edges.length), loops=[];
+    for(let ei=0;ei<edges.length;ei++) if(!used[ei]){
+      const pts=[];let cur=ei,start=edges[ei][0];
+      while(!used[cur]){
+        used[cur]=1;const e=edges[cur];pts.push(e[0]);const end=e[1];
+        if(end[0]===start[0]&&end[1]===start[1])break;
+        const arr=map.get(key(end[0],end[1]))||[];cur=arr.find(j=>!used[j]);if(cur===undefined)break;
+      }
+      if(pts.length>8) loops.push(pts);
+    }
+    loops.sort((a,b)=>b.length-a.length); const pts=loops[0];
+    // RDP simplify while retaining a smooth, recognizable character silhouette.
+    function rdp(arr,eps){
+      if(arr.length<3)return arr;let max=0,idx=-1,a=arr[0],b=arr[arr.length-1];
+      const dist=(p,a,b)=>{const dx=b[0]-a[0],dy=b[1]-a[1];if(!dx&&!dy)return Math.hypot(p[0]-a[0],p[1]-a[1]);const t=clamp(((p[0]-a[0])*dx+(p[1]-a[1])*dy)/(dx*dx+dy*dy),0,1);return Math.hypot(p[0]-(a[0]+t*dx),p[1]-(a[1]+t*dy))};
+      for(let i=1;i<arr.length-1;i++){const d0=dist(arr[i],a,b);if(d0>max){max=d0;idx=i}}
+      if(max>eps){const l=rdp(arr.slice(0,idx+1),eps),r=rdp(arr.slice(idx),eps);return l.slice(0,-1).concat(r)}
+      return [a,b];
+    }
+    const simp=rdp(pts,Math.max(1.5,Math.min(w,h)*.025));
+    const bw=maxX-minX+1,bh=maxY-minY+1;
+    const shape=new THREE.Shape();
+    simp.forEach((p,i)=>{const x=(p[0]-minX)/bw*4.0-2,y=2.5-(p[1]-minY)/bh*5.0;i?shape.lineTo(x,y):shape.moveTo(x,y)});
+    shape.closePath();
+    const normalized=simp.map(p=>[(p[0]-minX)/bw*4.0-2,2.5-(p[1]-minY)/bh*5.0]);
+    return {shape,aspect:im.naturalWidth/im.naturalHeight,bounds:{bw,bh},points:normalized};
+  }catch(e){console.warn('silhouette failed',e);return null}
+}
+
+function buildShapeMesh(type,material){
+  if(type==='circle') return new THREE.Mesh(new THREE.TorusGeometry(.50,.095,20,56),material);
+  if(type==='chain'){
+    const g=new THREE.Group();
+    const a=new THREE.Mesh(new THREE.TorusGeometry(.40,.075,16,44),material);
+    const b=new THREE.Mesh(new THREE.TorusGeometry(.40,.075,16,44),material);
+    a.rotation.x=.34; b.rotation.x=-.34; b.position.y=-.31; g.add(a,b); return g;
+  }
+  const sh=new THREE.Shape();
+  if(type==='heart'){
+    sh.moveTo(0,-.48);sh.bezierCurveTo(-.82,-.05,-.60,.58,0,.35);sh.bezierCurveTo(.60,.58,.82,-.05,0,-.48);
+  }else if(type==='star'){
+    for(let i=0;i<10;i++){const a=-Math.PI/2+i*Math.PI/5,r=i%2?.25:.55,x=Math.cos(a)*r,y=Math.sin(a)*r;i?sh.lineTo(x,y):sh.moveTo(x,y)}sh.closePath();
+  }else if(type==='moon'){
+    sh.absarc(0,0,.55,Math.PI*.18,Math.PI*1.82,false);sh.absarc(.18,0,.43,Math.PI*1.82,Math.PI*.18,true);sh.closePath();
+  }else{ // rounded flower: smooth six-petal curve, no sharp tips
+    const n=72;
+    for(let i=0;i<n;i++){
+      const a=-Math.PI/2+i*Math.PI*2/n;
+      const rr=.43 + .115*Math.cos(a*6);
+      const x=Math.cos(a)*rr,y=Math.sin(a)*rr;
+      i?sh.lineTo(x,y):sh.moveTo(x,y);
+    }
+    sh.closePath();
+  }
+  const geo=new THREE.ExtrudeGeometry(sh,{depth:.12,bevelEnabled:true,bevelSegments:3,bevelSize:.035,bevelThickness:.025});geo.center();
+  return new THREE.Mesh(geo,material);
+}
+
 function initThree(){
-  if(!window.THREE || three) return;
+  if(!window.THREE||three)return;
   const canvas=document.getElementById('threeCanvas');
   const renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true,preserveDrawingBuffer:true});
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,1.35));
   renderer.outputEncoding=THREE.sRGBEncoding;
-
   const scene=new THREE.Scene();
-  const camera=new THREE.PerspectiveCamera(32,1,.1,100);
-  camera.position.set(0,0,9);
+  const camera=new THREE.PerspectiveCamera(31,1,.1,100);camera.position.set(0,0,9.6);
+  const group=new THREE.Group();group.scale.set(.72,.72,.72);scene.add(group);
+  const hemi=new THREE.HemisphereLight(0xffffff,0xc7a96d,1.45);scene.add(hemi);
+  const keyLight=new THREE.DirectionalLight(0xffffff,2.5);keyLight.position.set(-4,5,7);scene.add(keyLight);
+  const rim=new THREE.PointLight(0xf0b6e7,1.5,14);rim.position.set(4,1,4);scene.add(rim);
+  const warm=new THREE.PointLight(0xffdf9a,.7,12);warm.position.set(-3,-2,3);scene.add(warm);
+  const floor=new THREE.Mesh(new THREE.CircleGeometry(2.7,48),new THREE.MeshBasicMaterial({color:0x7b6643,transparent:true,opacity:.09}));floor.rotation.x=-Math.PI/2;floor.position.y=-3.15;floor.scale.y=.28;scene.add(floor);
 
-  const group=new THREE.Group(); scene.add(group);
-  const hemi=new THREE.HemisphereLight(0xffffff,0xd8bf7b,1.5); scene.add(hemi);
-  const keyLight=new THREE.DirectionalLight(0xffffff,2.25); keyLight.position.set(-4,5,6); scene.add(keyLight);
-  const rim=new THREE.PointLight(0xf0b6e7,1.25,14); rim.position.set(4,1,4); scene.add(rim);
-  const warm=new THREE.PointLight(0xffe39a,.65,12); warm.position.set(-3,-2,3); scene.add(warm);
-
-  const acrylic=new THREE.Mesh(
-    new THREE.ExtrudeGeometry(roundedShape(4,5,.42),{depth:.16,bevelEnabled:true,bevelSegments:3,bevelSize:.045,bevelThickness:.035}),
-    new THREE.MeshPhysicalMaterial({color:0xffffff,transparent:true,opacity:.22,roughness:.13,metalness:.02,clearcoat:1,clearcoatRoughness:.08,side:THREE.DoubleSide})
-  );
-  acrylic.rotation.x=0; acrylic.position.z=-.08; group.add(acrylic);
-
-  const edge=new THREE.LineSegments(
-    new THREE.EdgesGeometry(acrylic.geometry),
-    new THREE.LineBasicMaterial({color:0xf0d9a0,transparent:true,opacity:.85})
-  );
-  edge.position.copy(acrylic.position); group.add(edge);
-
-  const imgPlane=new THREE.Mesh(new THREE.PlaneGeometry(3.55,4.45),new THREE.MeshBasicMaterial({transparent:true,depthWrite:false,side:THREE.DoubleSide}));
-  imgPlane.position.z=.035; group.add(imgPlane);
-
-  const holeMesh=new THREE.Mesh(
-    new THREE.TorusGeometry(.16,.055,16,32),
-    makeMetalMaterial(0xd7d8dc)
-  );
-  holeMesh.position.z=.13; group.add(holeMesh);
-
-  const hardware=new THREE.Group(); group.add(hardware);
-  let ringMesh=null, connectorMesh=null;
+  let silhouette=null, acrylic=null, edge=null, imgPlane=null, backImgPlane=null, tintPlane=null, ringMesh=null, connectorMesh=null;
+  const hardware=new THREE.Group();group.add(hardware);
+  const holeMesh=new THREE.Mesh(new THREE.TorusGeometry(.15,.052,14,32),makeMetalMaterial(0xd7d8dc));group.add(holeMesh);
   const metalColors={silver:0xd7d8dc,gold:0xe4bd5d,rose:0xdf9fa9,black:0x403b42};
+  const defaultShape=roundedShape(4,5,.42);
 
-  const floor=new THREE.Mesh(new THREE.CircleGeometry(2.4,64),new THREE.MeshBasicMaterial({color:0x7b6643,transparent:true,opacity:.10}));
-  floor.rotation.x=-Math.PI/2; floor.position.y=-3.0; floor.scale.y=.35; scene.add(floor);
+  function resize(){const w=canvas.clientWidth||600,h=canvas.clientHeight||450;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix()}
+  if(window.ResizeObserver)new ResizeObserver(resize).observe(canvas.parentElement);else window.addEventListener('resize',resize);resize();
 
-  function resize(){
-    const w=canvas.clientWidth||600,h=canvas.clientHeight||450;
-    renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix();
-  }
-  if(window.ResizeObserver) new ResizeObserver(resize).observe(canvas.parentElement); else window.addEventListener('resize',resize);
-  resize();
+  function makeImageMaterial(){return new THREE.MeshBasicMaterial({transparent:true,depthWrite:false,side:THREE.FrontSide,toneMapped:false})}
+  function textureFromURL(url){if(!url||!imgPlane)return;new THREE.TextureLoader().load(url,tex=>{tex.encoding=THREE.sRGBEncoding;imgPlane.material.map=tex;imgPlane.material.needsUpdate=true;if(backImgPlane){backImgPlane.material.map=tex;backImgPlane.material.needsUpdate=true}})}
 
-  function textureFromURL(url){
-    if(!url) return;
-    new THREE.TextureLoader().load(url,tex=>{
-      tex.encoding=THREE.sRGBEncoding;
-      imgPlane.material.map=tex; imgPlane.material.needsUpdate=true;
-    });
-  }
+  function acrylicScale(){return {x:(190+state.padding*2)/230,y:(240+state.padding*2)/290}}
+  function currentShape(){return silhouette?.shape||defaultShape}
 
-  function acrylicScale(){
-    // Keep the character size stable while the acrylic outer area changes.
-    return {x:(190+state.padding*2)/230,y:(240+state.padding*2)/290};
+  function rebuildAcrylic(){
+    if(acrylic){group.remove(acrylic);acrylic.geometry.dispose();acrylic.material.dispose()}
+    if(edge){group.remove(edge);edge.geometry.dispose();edge.material.dispose()}
+    const geo=new THREE.ExtrudeGeometry(currentShape(),{depth:.18,bevelEnabled:true,bevelSegments:3,bevelSize:.055,bevelThickness:.04,curveSegments:3});geo.center();
+    acrylic=new THREE.Mesh(geo,new THREE.MeshPhysicalMaterial({color:0xffffff,transparent:true,opacity:.22,roughness:.12,metalness:.02,clearcoat:1,clearcoatRoughness:.08,side:THREE.DoubleSide}));acrylic.position.z=-.10;group.add(acrylic);
+    edge=new THREE.LineSegments(new THREE.EdgesGeometry(geo),new THREE.LineBasicMaterial({color:0xf0d9a0,transparent:true,opacity:.9}));edge.position.copy(acrylic.position);group.add(edge);
+    if(imgPlane)group.remove(imgPlane);if(backImgPlane)group.remove(backImgPlane);
+    imgPlane=new THREE.Mesh(new THREE.PlaneGeometry(1,1),makeImageMaterial());
+    imgPlane.position.z=.018;group.add(imgPlane);
+    // A real double-sided print: a second outward-facing plane sits on the back.
+    // Rotating the back plane 180° keeps the artwork readable from either side.
+    backImgPlane=new THREE.Mesh(new THREE.PlaneGeometry(1,1),makeImageMaterial());
+    backImgPlane.position.z=-.205;backImgPlane.rotation.y=Math.PI;group.add(backImgPlane);
+    if(tintPlane)group.remove(tintPlane);tintPlane=new THREE.Mesh(new THREE.ExtrudeGeometry(currentShape(),{depth:.012,bevelEnabled:false}),new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0,side:THREE.DoubleSide}));tintPlane.position.z=.075;group.add(tintPlane);
+    three.acrylic=acrylic;three.edge=edge;three.imgPlane=imgPlane;three.backImgPlane=backImgPlane;three.tintPlane=tintPlane;
+    textureFromURL(state.material==='line'?(state.line||state.cutout):state.cutout||state.img?.src);
+    updateGeometry();materialUpdate();
   }
 
   function materialUpdate(){
+    if(!acrylic)return;
     const mat=acrylic.material;
-    if(state.material==='aurora'){
-      mat.color.set(0xf1d8ff); mat.opacity=.25; mat.roughness=.11; rim.color.set(0xf0b7e8);
-    }else if(state.material==='pearl'){
-      mat.color.set(0xfff1dc); mat.opacity=.34; mat.roughness=.21; rim.color.set(0xffe5a5);
-    }else if(state.material==='clear'){
-      mat.color.set(0xffffff); mat.opacity=.13; mat.roughness=.07; rim.color.set(0xffffff);
-    }else if(state.material==='line'){
-      mat.color.set(0xffffff); mat.opacity=.09; mat.roughness=.09; rim.color.set(0xd8c4ef);
-    }else{
-      mat.color.set(hexNumber($('#opaqueColor').value)); mat.opacity=.96; mat.roughness=.28; rim.color.set(0xffdf9c);
-    }
-    const sc=acrylicScale(); acrylic.scale.set(sc.x,sc.y,1); edge.scale.set(sc.x,sc.y,1);
-    mat.needsUpdate=true;
-  }
-
-  function buildShapeMesh(type,material){
-    if(type==='circle'){
-      return new THREE.Mesh(new THREE.TorusGeometry(.50,.095,18,52),material);
-    }
-    if(type==='chain'){
-      const g=new THREE.Group();
-      const a=new THREE.Mesh(new THREE.TorusGeometry(.40,.08,14,40),material);
-      const b=new THREE.Mesh(new THREE.TorusGeometry(.40,.08,14,40),material);
-      a.rotation.x=.38; b.rotation.x=-.38; b.position.y=-.30; g.add(a,b); return g;
-    }
-    const sh=new THREE.Shape();
-    if(type==='heart'){
-      sh.moveTo(0,-.48); sh.bezierCurveTo(-.82,-.05,-.60,.55,0,.35); sh.bezierCurveTo(.60,.55,.82,-.05,0,-.48);
-    }else if(type==='star'){
-      for(let i=0;i<10;i++){const a=-Math.PI/2+i*Math.PI/5,r=i%2?.25:.55,x=Math.cos(a)*r,y=Math.sin(a)*r;i?sh.lineTo(x,y):sh.moveTo(x,y)} sh.closePath();
-    }else if(type==='moon'){
-      sh.absarc(0,0,.55,Math.PI*.18,Math.PI*1.82,false); sh.absarc(.18,0,.43,Math.PI*1.82,Math.PI*.18,true); sh.closePath();
-    }else{
-      for(let i=0;i<16;i++){const a=-Math.PI/2+i*Math.PI/8,r=i%2?.30:.55,x=Math.cos(a)*r,y=Math.sin(a)*r;i?sh.lineTo(x,y):sh.moveTo(x,y)} sh.closePath();
-    }
-    const geo=new THREE.ExtrudeGeometry(sh,{depth:.11,bevelEnabled:true,bevelSegments:2,bevelSize:.025,bevelThickness:.02});
-    geo.center();
-    return new THREE.Mesh(geo,material);
+    if(state.material==='aurora'){mat.color.set(0xf3d7ff);mat.opacity=.27;mat.roughness=.09;rim.color.set(0xef9fdc);tintPlane.material.color.set(0xd8b4ff);tintPlane.material.opacity=.07}
+    else if(state.material==='pearl'){mat.color.set(0xfff0d8);mat.opacity=.40;mat.roughness=.18;rim.color.set(0xffdfa0);tintPlane.material.color.set(0xffe8c7);tintPlane.material.opacity=.075}
+    else if(state.material==='clear'){mat.color.set(0xffffff);mat.opacity=.12;mat.roughness=.055;rim.color.set(0xffffff);tintPlane.material.color.set(0xffffff);tintPlane.material.opacity=.025}
+    else if(state.material==='line'){mat.color.set(0xffffff);mat.opacity=.075;mat.roughness=.07;rim.color.set(0xd4b8ed);tintPlane.material.color.set(0xffffff);tintPlane.material.opacity=.018}
+    else{mat.color.set(hexNumber($('#opaqueColor').value));mat.opacity=.94;mat.roughness=.24;rim.color.set(0xffd98e);tintPlane.material.color.set(hexNumber($('#opaqueColor').value));tintPlane.material.opacity=.10}
+    mat.needsUpdate=true;tintPlane.material.needsUpdate=true;
   }
 
   function metalUpdate(){
-    const color=metalColors[state.metal]||metalColors.silver;
-    const mat=makeMetalMaterial(color);
-    if(ringMesh) hardware.remove(ringMesh);
-    if(connectorMesh) hardware.remove(connectorMesh);
-    ringMesh=buildShapeMesh(state.ring,mat); ringMesh.position.z=.14; hardware.add(ringMesh);
-    connectorMesh=new THREE.Mesh(new THREE.CylinderGeometry(.055,.055,.62,14),mat); connectorMesh.position.z=.14; hardware.add(connectorMesh);
+    const color=metalColors[state.metal]||metalColors.silver,mat=makeMetalMaterial(color);
+    if(ringMesh){hardware.remove(ringMesh);ringMesh.traverse(o=>o.geometry?.dispose())}
+    if(connectorMesh){hardware.remove(connectorMesh);connectorMesh.geometry?.dispose()}
+    ringMesh=buildShapeMesh(state.ring,mat);ringMesh.position.z=.18;hardware.add(ringMesh);
+    connectorMesh=new THREE.Mesh(new THREE.CylinderGeometry(.055,.055,.62,14),mat);connectorMesh.position.z=.18;hardware.add(connectorMesh);
     updateGeometry();
   }
 
+  function pointInPoly(x,y,pts){
+    if(!pts||pts.length<3)return true;let inside=false;
+    for(let i=0,j=pts.length-1;i<pts.length;j=i++){
+      const xi=pts[i][0],yi=pts[i][1],xj=pts[j][0],yj=pts[j][1];
+      const hit=((yi>y)!=(yj>y))&&(x<(xj-xi)*(y-yi)/(yj-yi+1e-9)+xi);if(hit)inside=!inside;
+    }
+    return inside;
+  }
+  function fitHoleInside(x,y,sc){
+    const pts=silhouette?.points;if(!pts)return {x,y};
+    // Keep a little breathing room from the outer acrylic edge.
+    const safe=(px,py)=>pointInPoly(px,py,pts);
+    if(safe(x,y))return {x,y};
+    const cx=0,cy=0;let lo=0,hi=1;
+    for(let i=0;i<18;i++){const m=(lo+hi)/2,px=cx+(x-cx)*m,py=cy+(y-cy)*m;if(safe(px,py))lo=m;else hi=m}
+    return {x:cx+(x-cx)*Math.max(0,lo-.025),y:cy+(y-cy)*Math.max(0,lo-.025)};
+  }
+
   function updateGeometry(){
-    const sc=acrylicScale();
-    // Coordinates are in the unscaled acrylic's local space, then clamped with a metal-hole margin.
-    const halfW=2*sc.x, halfH=2.5*sc.y;
-    const margin=.22;
-    const x=clamp((state.holeX-.5)*4*sc.x,-halfW+margin,halfW-margin);
-    const y=clamp((.5-state.holeY)*5*sc.y,-halfH+margin,halfH-margin);
-    holeMesh.position.set(x,y,.13);
-    const ringY=y+.78;
-    if(ringMesh) ringMesh.position.set(x,ringY,.14);
-    if(connectorMesh){ connectorMesh.position.set(x,y+.39,.14); connectorMesh.scale.y=Math.max(.15,(ringY-y)/.62); }
+    const sc=acrylicScale();acrylic?.scale.set(sc.x,sc.y,1);edge?.scale.set(sc.x,sc.y,1);tintPlane?.scale.set(sc.x,sc.y,1);
+    const halfW=2*sc.x,halfH=2.5*sc.y,margin=.25;
+    let x=clamp((state.holeX-.5)*4*sc.x,-halfW+margin,halfW-margin), y=clamp((.5-state.holeY)*5*sc.y,-halfH+margin,halfH-margin);
+    const fitted=fitHoleInside(x/sc.x,y/sc.y,sc);x=fitted.x*sc.x;y=fitted.y*sc.y;
+    holeMesh.position.set(x,y,.22);
+    const ringY=y+.78;if(ringMesh)ringMesh.position.set(x,ringY,.23);
+    if(connectorMesh){connectorMesh.position.set(x,y+.39,.22);connectorMesh.scale.y=Math.max(.15,(ringY-y)/.62)}
+    if(imgPlane){
+      const aspect=silhouette?.aspect||((state.img?.naturalWidth||1)/(state.img?.naturalHeight||1));
+      const targetH=silhouette?4.55:4.2; imgPlane.scale.set(targetH*aspect,targetH,1);
+      // Fit the same print on both faces so the back has exactly the same size.
+      const maxW=3.45,maxH=4.55,fit=Math.min(maxW/(targetH*aspect),maxH/targetH,1);imgPlane.scale.multiplyScalar(fit);
+      if(backImgPlane){backImgPlane.scale.copy(imgPlane.scale);backImgPlane.position.x=imgPlane.position.x;backImgPlane.position.y=imgPlane.position.y;}
+    }
+  }
+
+  function updateSilhouette(){
+    const url=state.cutout||state.img?.src;
+    makeAlphaSilhouette(url).then(sil=>{silhouette=sil;rebuildAcrylic()});
   }
 
   function render(){
     resize();
-    materialUpdate();
-    // A moving light creates a subtle material shimmer without changing the uploaded art.
     const t=performance.now()/1000;
-    if(state.material==='aurora') rim.position.x=4+Math.sin(t*.9)*2.2;
-    else rim.position.x=4;
-    group.rotation.y=state.rotation*Math.PI/180;
-    group.rotation.x=Math.sin(t*.8)*.025;
-    renderer.render(scene,camera);
-    requestAnimationFrame(render);
+    if(state.material==='aurora'){rim.position.x=3.5+Math.sin(t*1.15)*2.7;rim.position.y=1+Math.cos(t*.8)*1.2}
+    else if(state.material==='pearl'){rim.position.x=3+Math.sin(t*1.8)*1.4;rim.position.y=1.5}
+    else rim.position.x=3.5;
+    if(tintPlane && state.material==='pearl')tintPlane.material.opacity=.045+.025*(Math.sin(t*2.2)+1);
+    if(tintPlane && state.material==='aurora')tintPlane.material.opacity=.045+.035*(Math.sin(t*1.7)+1)/2;
+    group.rotation.y=state.rotation*Math.PI/180;group.rotation.x=Math.sin(t*.75)*.022;
+    renderer.render(scene,camera);requestAnimationFrame(render);
   }
 
-  three={renderer,scene,camera,group,acrylic,imgPlane,edge,holeMesh,hardware,textureFromURL,materialUpdate,metalUpdate,updateGeometry};
-  textureFromURL(state.cutout||state.img?.src);
-  materialUpdate(); metalUpdate(); updateGeometry(); render();
+  three={renderer,scene,camera,group,hardware,holeMesh,textureFromURL,materialUpdate,metalUpdate,updateGeometry,updateSilhouette,rebuildAcrylic,get silhouette(){return silhouette}};
+  rebuildAcrylic();metalUpdate();render();
 }
-
 setTimeout(initThree,50);
 
-// Replace the old DOM-only update with a 3D-aware update.
 const originalUpdateKeyring=updateKeyring;
 updateKeyring=function(){
   originalUpdateKeyring();
   if(three){
     three.materialUpdate();
     three.textureFromURL(state.material==='line'?(state.line||state.cutout):state.cutout||state.img?.src);
-    three.metalUpdate();
-    three.updateGeometry();
+    three.metalUpdate();three.updateGeometry();
+    if(state.cutout||state.img)three.updateSilhouette();
   }
 };
 
-// Keep the visible hole controls synchronized with the 3D version.
 const oldHolePreset=setHolePreset;
 setHolePreset=function(){
   oldHolePreset();
-  setHolePreset3D();
+  if(state.hole==='top'){state.holeX=.5;state.holeY=.08}
+  else if(state.hole==='top-left'){state.holeX=.23;state.holeY=.08}
+  else if(state.hole==='top-right'){state.holeX=.77;state.holeY=.08}
+  if(three)three.updateGeometry();
 };
 
-// Rebuild the 3D hardware whenever ring or metal changes.
 const oldRingShape=updateRingShape;
-updateRingShape=function(){ oldRingShape(); if(three) three.metalUpdate(); };
-
-// Canvas interaction: drag the preview to rotate; drag the metal hole to reposition it.
-const raycaster=new THREE.Raycaster();
-const pointer=new THREE.Vector2();
-const dragPlane=new THREE.Plane(new THREE.Vector3(0,0,1),0);
-let canvasMode=null, canvasStartX=0, canvasStartRotation=0;
+updateRingShape=function(){oldRingShape();if(three)three.metalUpdate()};
 
 function pointerToLocal(e){
-  if(!three) return null;
-  const r=three.renderer.domElement.getBoundingClientRect();
-  pointer.x=((e.clientX-r.left)/r.width)*2-1;
-  pointer.y=-((e.clientY-r.top)/r.height)*2+1;
-  raycaster.setFromCamera(pointer,three.camera);
-  const world=new THREE.Vector3();
-  if(!raycaster.ray.intersectPlane(dragPlane,world)) return null;
-  return three.group.worldToLocal(world);
+  if(!three)return null;const r=three.renderer.domElement.getBoundingClientRect();
+  pointer.x=((e.clientX-r.left)/r.width)*2-1;pointer.y=-((e.clientY-r.top)/r.height)*2+1;raycaster.setFromCamera(pointer,three.camera);
+  const plane=new THREE.Plane(new THREE.Vector3(0,0,1),0),world=new THREE.Vector3();if(!raycaster.ray.intersectPlane(plane,world))return null;return three.group.worldToLocal(world);
 }
-
-function isNearHole(local){
-  if(!three||!local) return false;
-  const p=three.holeMesh.position;
-  return Math.hypot(local.x-p.x,local.y-p.y)<.42;
-}
-
-canvas=document.getElementById('threeCanvas');
-canvas.addEventListener('pointerdown',e=>{
-  if(!three)return;
-  const local=pointerToLocal(e);
-  if(isNearHole(local)){
-    canvasMode='hole';
-    canvas.setPointerCapture?.(e.pointerId);
-    canvas.style.cursor='grabbing';
-  }else{
-    canvasMode='rotate'; canvasStartX=e.clientX; canvasStartRotation=state.rotation;
-    canvas.setPointerCapture?.(e.pointerId); state.dragging=true; canvas.style.cursor='grabbing';
-  }
-});
+function isNearHole(local){if(!three||!local)return false;const p=three.holeMesh.position;return Math.hypot(local.x-p.x,local.y-p.y)<.42}
+const canvas=document.getElementById('threeCanvas');
+canvas.addEventListener('pointerdown',e=>{if(!three)return;const local=pointerToLocal(e);if(isNearHole(local)){canvasMode='hole'}else{canvasMode='rotate';canvasStartX=e.clientX;canvasStartRotation=state.rotation;state.dragging=true}canvas.setPointerCapture?.(e.pointerId);canvas.style.cursor='grabbing'});
 canvas.addEventListener('pointermove',e=>{
   if(!three||!canvasMode)return;
-  if(canvasMode==='rotate'){
-    state.rotation=canvasStartRotation+(e.clientX-canvasStartX)*.65;
-  }else{
-    const local=pointerToLocal(e); if(!local)return;
-    const sc=acrylicScale();
-    const halfW=2*sc.x, halfH=2.5*sc.y, margin=.28;
-    const x=clamp(local.x,-halfW+margin,halfW-margin);
-    const y=clamp(local.y,-halfH+margin,halfH-margin);
-    state.holeX=clamp(x/(4*sc.x)+.5,.08,.92);
-    state.holeY=clamp(.5-y/(5*sc.y),.07,.93);
-    state.hole='custom';
-    $$('.hole-presets .choice').forEach(x=>x.classList.toggle('active',x.dataset.hole==='custom'));
-    $('#holeValue').textContent='직접 지정';
-    three.updateGeometry();
-  }
+  if(canvasMode==='rotate'){state.rotation=canvasStartRotation+(e.clientX-canvasStartX)*.65;return}
+  const local=pointerToLocal(e);if(!local)return;const sc=acrylicScale(),halfW=2*sc.x,halfH=2.5*sc.y,margin=.28;
+  const x=clamp(local.x,-halfW+margin,halfW-margin),y=clamp(local.y,-halfH+margin,halfH-margin);
+  state.holeX=clamp(x/(4*sc.x)+.5,.07,.93);state.holeY=clamp(.5-y/(5*sc.y),.07,.93);state.hole='custom';$$('.hole-presets .choice').forEach(x=>x.classList.toggle('active',x.dataset.hole==='custom'));$('#holeValue').textContent='직접 지정';three.updateGeometry();
 });
-function endCanvasDrag(){ canvasMode=null; state.dragging=false; canvas.style.cursor='grab'; }
-canvas.addEventListener('pointerup',endCanvasDrag); canvas.addEventListener('pointercancel',endCanvasDrag);
-canvas.style.cursor='grab';
+function endCanvasDrag(){canvasMode=null;state.dragging=false;canvas.style.cursor='grab'}
+canvas.addEventListener('pointerup',endCanvasDrag);canvas.addEventListener('pointercancel',endCanvasDrag);canvas.style.cursor='grab';
 
-// Real animated GIF export from the current Three.js renderer.
+// Fast GIF: smaller render target, fewer frames, and no long JS-side yielding. gif.js does the heavy encoding in workers.
 $('#saveGif').onclick=async ev=>{
   showSpark(ev.clientX,ev.clientY);
-  if(!three||!window.GIF){saveStatus.textContent='3D/GIF 모듈을 불러오지 못했어요. 인터넷 연결을 확인해주세요.';return;}
-  saveStatus.textContent='360° GIF를 렌더링하고 있어요… 잠시만 기다려주세요 ✨';
-  const gif=new GIF({workers:2,quality:8,width:480,height:480,workerScript:'https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.worker.js',background:'#fffdf4'});
-  const frames=40, oldRot=state.rotation, delay=Math.round((state.speed*1000)/frames);
+  if(!three||!window.GIF){saveStatus.textContent='3D/GIF 모듈을 불러오지 못했어요.';return}
+  saveStatus.textContent='빠른 GIF를 준비하고 있어요… ✨';
+  const W=360,H=360,gif=new GIF({workers:2,quality:12,width:W,height:H,workerScript:'https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.worker.js',background:'#fffdf4'});
+  const frames=24,oldRot=state.rotation,oldW=three.renderer.domElement.width,oldH=three.renderer.domElement.height;
+  const delay=Math.max(45,Math.round((state.speed*1000)/frames));
+  three.renderer.setSize(W,H,false);
   for(let i=0;i<frames;i++){
-    state.rotation=i/frames*360;
-    three.group.rotation.y=state.rotation*Math.PI/180;
-    three.renderer.render(three.scene,three.camera);
+    state.rotation=i/frames*360;three.group.rotation.y=state.rotation*Math.PI/180;three.renderer.render(three.scene,three.camera);
     gif.addFrame(three.renderer.domElement,{copy:true,delay});
-    if(i%4===0) await new Promise(r=>requestAnimationFrame(r));
   }
-  state.rotation=oldRot;
-  gif.on('progress',p=>saveStatus.textContent=`GIF 렌더링 중… ${Math.round(p*100)}% ✨`);
-  gif.on('finished',blob=>{
-    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='키링공방_360.gif';a.click();
-    saveStatus.textContent='360° GIF 저장 완료! ♥︎';
-  });
+  state.rotation=oldRot;three.renderer.setSize(canvas.clientWidth||600,canvas.clientHeight||450,false);
+  gif.on('progress',p=>saveStatus.textContent=`GIF 만들기… ${Math.round(p*100)}% ✨`);
+  gif.on('finished',blob=>{const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='키링공방_360.gif';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1500);saveStatus.textContent='360° GIF 저장 완료! ♥︎'});
   gif.render();
+};
+
+// Better PNG export: render the actual 3D scene instead of a flat illustration.
+$('#savePng').onclick=async ev=>{
+  showSpark(ev.clientX,ev.clientY);saveStatus.textContent='3D 키링 PNG를 만들고 있어요… ✨';
+  if(three){
+    const W=720,H=720,oldRot=state.rotation;three.renderer.setSize(W,H,false);three.group.rotation.y=state.rotation*Math.PI/180;three.renderer.render(three.scene,three.camera);
+    const a=document.createElement('a');a.href=three.renderer.domElement.toDataURL('image/png');a.download='키링공방_3D.png';a.click();state.rotation=oldRot;three.renderer.setSize(canvas.clientWidth||600,canvas.clientHeight||450,false);saveStatus.textContent='3D 키링 PNG 저장 완료! ✦';return;
+  }
+  saveStatus.textContent='3D 미리보기를 불러오는 중이에요…';
 };
